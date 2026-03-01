@@ -13,6 +13,7 @@ st.set_page_config(layout="wide")
 MIN_MARKET_CAP = 50_000_000
 MIN_VOLUME = 5_000_000
 TOP_LIMIT = 300
+FIB_PERIOD = 100  # فترة فيبوناتشي أطول للأهداف
 
 # ==============================
 # أدوات مساعدة
@@ -96,7 +97,7 @@ def calculate_score(df, smart_mode=False):
     return score
 
 # ==============================
-# دالة الدعم والأهداف (فيبوناتشي)
+# دالة الدعم والأهداف (فيبوناتشي + دعم فعلي)
 # ==============================
 
 def find_targets(df):
@@ -117,12 +118,12 @@ def find_targets(df):
         support1 = valid_supports.iloc[0]
         support2 = support1 * 0.97
     else:
-        support1 = df["low"].rolling(50).min().iloc[-1]
+        support1 = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
         support2 = support1 * 0.97
 
-    # القمة والقاع لأهداف فيبوناتشي
-    period_high = df["high"].rolling(50).max().iloc[-1]
-    period_low = df["low"].rolling(50).min().iloc[-1]
+    # القمة والقاع لأهداف فيبوناتشي مع فترة أطول
+    period_high = df["high"].rolling(FIB_PERIOD).max().iloc[-1]
+    period_low = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
 
     target1 = period_low + (period_high - period_low) * 0.382
     target2 = period_low + (period_high - period_low) * 0.618
@@ -141,35 +142,31 @@ if st.button("🔍 Scan Market"):
 
     st.info("جاري تحميل السوق...")
     market_df = fetch_market_list()
-
     market_df = market_df[
         (market_df["market_cap"] > MIN_MARKET_CAP) &
         (market_df["total_volume"] > MIN_VOLUME)
     ]
-
     market_df = market_df.head(TOP_LIMIT)
 
     results = []
 
     progress = st.progress(0)
+    status_text = st.empty()
     total = len(market_df)
 
-    for i, row in market_df.iterrows():
-
-        symbol = row["symbol"].upper()
+    # حلقة البحث مع عداد يبدأ من 1
+    for idx, row in enumerate(market_df.itertuples(), start=1):
+        symbol = row.symbol.upper()
 
         ohlc = fetch_ohlc(symbol)
         if ohlc is None or len(ohlc) < 100:
             continue
 
         ohlc = add_indicators(ohlc)
-
         score = calculate_score(ohlc, smart_mode)
 
         if score >= 65:
-
             target1, target2, support1, support2 = find_targets(ohlc)
-
             results.append({
                 "symbol": symbol,
                 "price": ohlc.iloc[-1]["close"],
@@ -180,7 +177,9 @@ if st.button("🔍 Scan Market"):
                 "support2": support2
             })
 
-        progress.progress((len(results)+1)/total)
+        # تحديث Progress bar + النص
+        progress.progress(idx/total)
+        status_text.text(f"جارٍ تحميل العملة {idx} من {total} - {round(idx/total*100,1)}%")
 
     if not results:
         st.warning("لا توجد فرص حالياً")
@@ -198,7 +197,6 @@ if st.button("🔍 Scan Market"):
             ohlc = add_indicators(ohlc)
 
             st.subheader(f"تحليل {selected}")
-
             st.line_chart(ohlc[["close", "ema50", "ema200"]])
 
             latest = ohlc.iloc[-1]

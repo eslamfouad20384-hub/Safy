@@ -31,7 +31,6 @@ def fetch_market_list():
     df = pd.DataFrame(data)
     return df
 
-
 def fetch_ohlc(symbol):
     try:
         url = f"https://min-api.cryptocompare.com/data/v2/histohour"
@@ -45,7 +44,6 @@ def fetch_ohlc(symbol):
         return df
     except:
         return None
-
 
 def add_indicators(df):
     df["ema50"] = df["close"].ewm(span=50).mean()
@@ -65,7 +63,6 @@ def add_indicators(df):
     df["signal"] = df["macd"].ewm(span=9).mean()
 
     return df
-
 
 def calculate_score(df, smart_mode=False):
     latest = df.iloc[-1]
@@ -98,13 +95,39 @@ def calculate_score(df, smart_mode=False):
 
     return score
 
+# ==============================
+# دالة الدعم والأهداف (فيبوناتشي)
+# ==============================
 
 def find_targets(df):
-    resistance = df["close"].rolling(50).max().iloc[-1]
-    target1 = resistance
-    target2 = resistance * 1.08
-    return target1, target2
+    latest_price = df.iloc[-1]["close"]
 
+    # دعم فعلي من Swing Lows
+    df["swing_low"] = df["low"][
+        (df["low"].shift(1) > df["low"]) &
+        (df["low"].shift(-1) > df["low"])
+    ]
+    swing_lows = df["swing_low"].dropna()
+    valid_supports = swing_lows[swing_lows < latest_price].sort_values(ascending=False)
+
+    if len(valid_supports) >= 2:
+        support1 = valid_supports.iloc[0]
+        support2 = valid_supports.iloc[1]
+    elif len(valid_supports) == 1:
+        support1 = valid_supports.iloc[0]
+        support2 = support1 * 0.97
+    else:
+        support1 = df["low"].rolling(50).min().iloc[-1]
+        support2 = support1 * 0.97
+
+    # القمة والقاع لأهداف فيبوناتشي
+    period_high = df["high"].rolling(50).max().iloc[-1]
+    period_low = df["low"].rolling(50).min().iloc[-1]
+
+    target1 = period_low + (period_high - period_low) * 0.382
+    target2 = period_low + (period_high - period_low) * 0.618
+
+    return target1, target2, support1, support2
 
 # ==============================
 # الواجهة
@@ -145,14 +168,16 @@ if st.button("🔍 Scan Market"):
 
         if score >= 65:
 
-            target1, target2 = find_targets(ohlc)
+            target1, target2, support1, support2 = find_targets(ohlc)
 
             results.append({
                 "symbol": symbol,
                 "price": ohlc.iloc[-1]["close"],
                 "score": score,
                 "target1": target1,
-                "target2": target2
+                "target2": target2,
+                "support1": support1,
+                "support2": support2
             })
 
         progress.progress((len(results)+1)/total)
@@ -178,11 +203,11 @@ if st.button("🔍 Scan Market"):
 
             latest = ohlc.iloc[-1]
 
+            st.write("💰 سعر الدخول الحالي:", round(latest["close"], 4))
+            st.write("🟢 شراء إضافي 1:", round(results_df[results_df["symbol"]==selected]["support1"].values[0],4))
+            st.write("🟢 شراء إضافي 2:", round(results_df[results_df["symbol"]==selected]["support2"].values[0],4))
+            st.write("🎯 الهدف الأول:", round(results_df[results_df["symbol"]==selected]["target1"].values[0],4))
+            st.write("🎯 الهدف الثاني:", round(results_df[results_df["symbol"]==selected]["target2"].values[0],4))
             st.write("RSI:", round(latest["rsi"], 2))
             st.write("MACD:", round(latest["macd"], 4))
             st.write("Signal:", round(latest["signal"], 4))
-
-            target1, target2 = find_targets(ohlc)
-
-            st.write("🎯 الهدف الأول:", round(target1, 4))
-            st.write("🎯 الهدف الثاني:", round(target2, 4))

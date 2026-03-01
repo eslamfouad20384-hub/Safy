@@ -159,25 +159,39 @@ if st.button("🔍 Scan Market"):
 
     for idx, row in enumerate(market_df.itertuples(), start=1):
         symbol = row.symbol.upper()
+        status_text.text(f"جارٍ تحميل العملة {idx} من {total} - {round(idx/total*100,1)}%")
+        
+        st.write(f"⏳ جاري فحص: {symbol}")
+
         ohlc = fetch_ohlc(symbol)
         if ohlc is None or len(ohlc) < 100:
+            st.write(f"❌ {symbol} → فشل جلب بيانات OHLC")
             continue
+        else:
+            st.write(f"✅ {symbol} → بيانات OHLC جاهزة ({len(ohlc)} شمعة)")
+
         ohlc = add_indicators(ohlc)
         score = calculate_score(ohlc, smart_mode)
-        if score >= MIN_SCORE:
-            target1, target2, target3, support1, support2 = find_targets(ohlc)
-            results.append({
-                "symbol": symbol,
-                "price": ohlc.iloc[-1]["close"],
-                "score": score,
-                "target1": target1,
-                "target2": target2,
-                "target3": target3,
-                "support1": support1,
-                "support2": support2
-            })
+
+        if score < MIN_SCORE:
+            st.write(f"⚠ {symbol} → رفض بسبب Score منخفض ({score})")
+            continue
+
+        target1, target2, target3, support1, support2 = find_targets(ohlc)
+        st.write(f"🎯 {symbol} → ناجح، Score = {score}")
+
+        results.append({
+            "symbol": symbol,
+            "price": ohlc.iloc[-1]["close"],
+            "score": score,
+            "target1": target1,
+            "target2": target2,
+            "target3": target3,
+            "support1": support1,
+            "support2": support2
+        })
+
         progress.progress(idx/total)
-        status_text.text(f"جارٍ تحميل العملة {idx} من {total}")
 
     if not results:
         st.warning("لا توجد فرص حالياً")

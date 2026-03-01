@@ -9,25 +9,18 @@ st.set_page_config(layout="wide")
 # ==============================
 # إعدادات عامة
 # ==============================
-
 MIN_MARKET_CAP = 50_000_000
 MIN_VOLUME = 5_000_000
 TOP_LIMIT = 300
-FIB_PERIOD = 100  # فترة فيبوناتشي أطول للأهداف
+FIB_PERIOD = 50
+MIN_SCORE = 60
 
 # ==============================
 # أدوات مساعدة
 # ==============================
-
 def fetch_market_list():
     url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": 250,
-        "page": 1,
-        "sparkline": False
-    }
+    params = {"vs_currency":"usd","order":"market_cap_desc","per_page":250,"page":1,"sparkline":False}
     data = requests.get(url, params=params).json()
     df = pd.DataFrame(data)
     return df
@@ -35,11 +28,7 @@ def fetch_market_list():
 def fetch_ohlc(symbol):
     try:
         url = f"https://min-api.cryptocompare.com/data/v2/histohour"
-        params = {
-            "fsym": symbol.upper(),
-            "tsym": "USDT",
-            "limit": 200
-        }
+        params = {"fsym": symbol.upper(), "tsym": "USDT", "limit":200}
         r = requests.get(url, params=params).json()
         df = pd.DataFrame(r["Data"]["Data"])
         return df
@@ -49,135 +38,108 @@ def fetch_ohlc(symbol):
 def add_indicators(df):
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema200"] = df["close"].ewm(span=200).mean()
-
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(14).mean()
     avg_loss = loss.rolling(14).mean()
-
     rs = avg_gain / avg_loss
     df["rsi"] = 100 - (100 / (1 + rs))
-
     df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
     df["signal"] = df["macd"].ewm(span=9).mean()
-
     return df
 
 def calculate_score(df, smart_mode=False):
     latest = df.iloc[-1]
     score = 0
-
-    # دعم تقريبي
-    support = df["close"].rolling(50).min().iloc[-1]
-    if abs(latest["close"] - support) / latest["close"] < 0.05:
+    if latest["rsi"] < 50:
         score += 20
-
-    # RSI
-    if latest["rsi"] < 35:
-        score += 15
-
-    # MACD
     if latest["macd"] > latest["signal"]:
-        score += 15
-
-    # EMA Trend
+        score += 20
     if latest["ema50"] > latest["ema200"]:
-        score += 15
-
-    # حجم تداول
+        score += 20
     avg_vol = df["volumeto"].rolling(20).mean().iloc[-1]
     if latest["volumeto"] > avg_vol:
         score += 10
-
     if smart_mode:
-        score += 10  # زيادة وزن السيولة
-
+        score += 10
     return score
 
 # ==============================
-# دالة الدعم والأهداف (فيبوناتشي + دعم فعلي)
+# دالة الدعم والأهداف
 # ==============================
-
 def find_targets(df):
     latest_price = df.iloc[-1]["close"]
 
-    # دعم فعلي من Swing Lows
-    df["swing_low"] = df["low"][
-        (df["low"].shift(1) > df["low"]) &
-        (df["low"].shift(-1) > df["low"])
-    ]
+    # Swing lows للدعوم
+    df["swing_low"] = df["low"][(df["low"].shift(1) > df["low"]) & (df["low"].shift(-1) > df["low"])]
     swing_lows = df["swing_low"].dropna()
     valid_supports = swing_lows[swing_lows < latest_price].sort_values(ascending=False)
 
-    if len(valid_supports) >= 2:
+    # ثلاث دعوم
+    if len(valid_supports) >= 3:
         support1 = valid_supports.iloc[0]
         support2 = valid_supports.iloc[1]
+        support3 = valid_supports.iloc[2]
+    elif len(valid_supports) == 2:
+        support1, support2 = valid_supports.iloc[0], valid_supports.iloc[1]
+        support3 = support2 * 0.97
     elif len(valid_supports) == 1:
         support1 = valid_supports.iloc[0]
         support2 = support1 * 0.97
+        support3 = support2 * 0.97
     else:
-        support1 = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
-        support2 = support1 * 0.97
+        low_min = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
+        support1 = low_min
+        support2 = low_min * 0.97
+        support3 = low_min * 0.94
 
-    # القمة والقاع لأهداف فيبوناتشي مع فترة أطول
+    # فيبوناتشي للأهداف فوق السعر الحالي
     period_high = df["high"].rolling(FIB_PERIOD).max().iloc[-1]
-    period_low = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
+    period_low  = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
+    target1 = max(latest_price, period_low + (period_high - period_low) * 0.382)
+    target2 = max(latest_price, period_low + (period_high - period_low) * 0.618)
+    target3 = max(latest_price, period_low + (period_high - period_low) * 1.0)
 
-    target1 = period_low + (period_high - period_low) * 0.382
-    target2 = period_low + (period_high - period_low) * 0.618
-
-    return target1, target2, support1, support2
+    return target1, target2, target3, support1, support2, support3
 
 # ==============================
 # الواجهة
 # ==============================
-
 st.title("AI Spot Market Scanner")
-
 smart_mode = st.checkbox("Smart Capital Mode")
 
 if st.button("🔍 Scan Market"):
-
     st.info("جاري تحميل السوق...")
     market_df = fetch_market_list()
-    market_df = market_df[
-        (market_df["market_cap"] > MIN_MARKET_CAP) &
-        (market_df["total_volume"] > MIN_VOLUME)
-    ]
+    market_df = market_df[(market_df["market_cap"] > MIN_MARKET_CAP) & (market_df["total_volume"] > MIN_VOLUME)]
     market_df = market_df.head(TOP_LIMIT)
 
     results = []
-
     progress = st.progress(0)
     status_text = st.empty()
     total = len(market_df)
 
-    # حلقة البحث مع عداد يبدأ من 1
     for idx, row in enumerate(market_df.itertuples(), start=1):
         symbol = row.symbol.upper()
-
         ohlc = fetch_ohlc(symbol)
         if ohlc is None or len(ohlc) < 100:
             continue
-
         ohlc = add_indicators(ohlc)
         score = calculate_score(ohlc, smart_mode)
-
-        if score >= 65:
-            target1, target2, support1, support2 = find_targets(ohlc)
+        if score >= MIN_SCORE:
+            target1, target2, target3, support1, support2, support3 = find_targets(ohlc)
             results.append({
                 "symbol": symbol,
                 "price": ohlc.iloc[-1]["close"],
                 "score": score,
                 "target1": target1,
                 "target2": target2,
+                "target3": target3,
                 "support1": support1,
-                "support2": support2
+                "support2": support2,
+                "support3": support3
             })
-
-        # تحديث Progress bar + النص
         progress.progress(idx/total)
         status_text.text(f"جارٍ تحميل العملة {idx} من {total} - {round(idx/total*100,1)}%")
 
@@ -186,26 +148,31 @@ if st.button("🔍 Scan Market"):
     else:
         results_df = pd.DataFrame(results)
         results_df = results_df.sort_values("score", ascending=False).head(10)
-
         st.success("أفضل 10 فرص حالياً")
         st.dataframe(results_df)
 
         selected = st.selectbox("اختر عملة للتحليل المفصل", results_df["symbol"])
-
         if selected:
             ohlc = fetch_ohlc(selected)
             ohlc = add_indicators(ohlc)
-
-            st.subheader(f"تحليل {selected}")
-            st.line_chart(ohlc[["close", "ema50", "ema200"]])
-
             latest = ohlc.iloc[-1]
 
-            st.write("💰 سعر الدخول الحالي:", round(latest["close"], 4))
-            st.write("🟢 شراء إضافي 1:", round(results_df[results_df["symbol"]==selected]["support1"].values[0],4))
-            st.write("🟢 شراء إضافي 2:", round(results_df[results_df["symbol"]==selected]["support2"].values[0],4))
-            st.write("🎯 الهدف الأول:", round(results_df[results_df["symbol"]==selected]["target1"].values[0],4))
-            st.write("🎯 الهدف الثاني:", round(results_df[results_df["symbol"]==selected]["target2"].values[0],4))
-            st.write("RSI:", round(latest["rsi"], 2))
-            st.write("MACD:", round(latest["macd"], 4))
-            st.write("Signal:", round(latest["signal"], 4))
+            rsi_desc = "تشبع بيع" if latest["rsi"] < 30 else "حيادي" if latest["rsi"] < 70 else "تشبع شراء"
+            macd_desc = "اتجاه صاعد" if latest["macd"] > latest["signal"] else "اتجاه هابط"
+            signal_desc = "خط الإشارة أقل من MACD → إشارة شراء" if latest["macd"] > latest["signal"] else "خط الإشارة أعلى من MACD → إشارة بيع"
+            ema_desc = "اتجاه صاعد" if latest["ema50"] > latest["ema200"] else "اتجاه هابط"
+
+            st.subheader(f"تحليل {selected}")
+            st.line_chart(ohlc[["close","ema50","ema200"]])
+
+            st.write(f"💰 سعر الدخول الحالي: {round(latest['close'],4)}")
+            st.write(f"🟢 دعم 1: {round(results_df[results_df['symbol']==selected]['support1'].values[0],4)}")
+            st.write(f"🟢 دعم 2: {round(results_df[results_df['symbol']==selected]['support2'].values[0],4)}")
+            st.write(f"🟢 دعم 3: {round(results_df[results_df['symbol']==selected]['support3'].values[0],4)}")
+            st.write(f"🎯 هدف 1: {round(results_df[results_df['symbol']==selected]['target1'].values[0],4)}")
+            st.write(f"🎯 هدف 2: {round(results_df[results_df['symbol']==selected]['target2'].values[0],4)}")
+            st.write(f"🎯 هدف 3: {round(results_df[results_df['symbol']==selected]['target3'].values[0],4)}")
+            st.write(f"RSI: {round(latest['rsi'],2)} → {rsi_desc}")
+            st.write(f"MACD: {round(latest['macd'],4)} → {macd_desc}")
+            st.write(f"Signal: {round(latest['signal'],4)} → {signal_desc}")
+            st.write(f"EMA Trend: EMA50={round(latest['ema50'],4)}, EMA200={round(latest['ema200'],4)} → {ema_desc}")

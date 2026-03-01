@@ -68,6 +68,9 @@ def calculate_score(df, smart_mode=False):
         score += 20
     if latest["ema50"] > latest["ema200"]:
         score += 20
+    # حجم التداول
+    if "volumeto" not in df.columns:
+        df["volumeto"] = df.get("volumefrom", 0) * df["close"]
     avg_vol = df["volumeto"].rolling(20).mean().iloc[-1]
     if latest["volumeto"] > avg_vol:
         score += 10
@@ -160,7 +163,6 @@ if st.button("🔍 Scan Market"):
     for idx, row in enumerate(market_df.itertuples(), start=1):
         symbol = row.symbol.upper()
         status_text.text(f"جارٍ تحميل العملة {idx} من {total} - {round(idx/total*100,1)}%")
-        
         st.write(f"⏳ جاري فحص: {symbol}")
 
         ohlc = fetch_ohlc(symbol)
@@ -169,6 +171,13 @@ if st.button("🔍 Scan Market"):
             continue
         else:
             st.write(f"✅ {symbol} → بيانات OHLC جاهزة ({len(ohlc)} شمعة)")
+
+        # تحقق من حجم التداول
+        if "volumeto" not in ohlc.columns:
+            ohlc["volumeto"] = ohlc.get("volumefrom", 0) * ohlc["close"]
+            st.write(f"❌ {symbol} → حجم التداول مش موجود، تم حسابه من volumefrom")
+        else:
+            st.write(f"✅ {symbol} → حجم التداول موجود")
 
         ohlc = add_indicators(ohlc)
         score = calculate_score(ohlc, smart_mode)

@@ -2,13 +2,4 @@ streamlit
 pandas
 numpy
 requests
-matplotlib
-plotly
-seaborn
-plotly-express
-ta
 scikit-learn
-tensorflow
-torch
-nltk
-transformers

@@ -2,9 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import numpy as np
-import sqlite3
 import time
-from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
 
@@ -16,21 +14,6 @@ MIN_VOLUME = 5_000_000
 TOP_LIMIT = 300
 FIB_PERIOD = 50
 MIN_SCORE = 60
-CACHE_EXPIRY_MINUTES = 60  # تحديث البيانات بعد ساعة
-
-# ==============================
-# إعداد SQLite Cache
-# ==============================
-conn = sqlite3.connect("cache.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS market_cache (
-    symbol TEXT PRIMARY KEY,
-    data TEXT,
-    last_update TIMESTAMP
-)
-""")
-conn.commit()
 
 # ==============================
 # أدوات مساعدة
@@ -46,6 +29,7 @@ def fetch_market_list():
     }
     data = requests.get(url, params=params).json()
     df = pd.DataFrame(data)
+    # تأكد من الأعمدة
     if "market_cap" not in df.columns:
         df["market_cap"] = df.get("market_cap_usd", 0)
     if "total_volume" not in df.columns:
@@ -53,28 +37,11 @@ def fetch_market_list():
     return df
 
 def fetch_ohlc(symbol):
-    # تحقق من الكاش أولاً
-    cursor.execute("SELECT data, last_update FROM market_cache WHERE symbol=?", (symbol,))
-    row = cursor.fetchone()
-    now = datetime.utcnow()
-    if row:
-        last_update = datetime.fromisoformat(row[1])
-        if now - last_update < timedelta(minutes=CACHE_EXPIRY_MINUTES):
-            df = pd.read_json(row[0])
-            return df
-
-    # لو مش موجود أو قديم، اجلبه من الإنترنت
     try:
         url = f"https://min-api.cryptocompare.com/data/v2/histohour"
         params = {"fsym": symbol.upper(), "tsym": "USDT", "limit": 200}
         r = requests.get(url, params=params).json()
         df = pd.DataFrame(r["Data"]["Data"])
-        # حفظ في الكاش
-        cursor.execute("""
-            INSERT OR REPLACE INTO market_cache (symbol, data, last_update)
-            VALUES (?, ?, ?)
-        """, (symbol, df.to_json(), now.isoformat()))
-        conn.commit()
         return df
     except:
         return None
@@ -96,12 +63,16 @@ def add_indicators(df):
 def calculate_score(df, smart_mode=False):
     latest = df.iloc[-1]
     score = 0
+    # RSI
     if latest["rsi"] < 50:
         score += 20
+    # MACD
     if latest["macd"] > latest["signal"]:
         score += 20
+    # EMA Trend
     if latest["ema50"] > latest["ema200"]:
         score += 20
+    # حجم تداول
     avg_vol = df["volumeto"].rolling(20).mean().iloc[-1]
     if latest["volumeto"] > avg_vol:
         score += 10
@@ -109,8 +80,13 @@ def calculate_score(df, smart_mode=False):
         score += 10
     return score
 
+# ==============================
+# دالة الدعم والأهداف
+# ==============================
 def find_targets(df):
     latest_price = df.iloc[-1]["close"]
+
+    # دعم فعلي من Swing Lows
     df["swing_low"] = df["low"][
         (df["low"].shift(1) > df["low"]) & (df["low"].shift(-1) > df["low"])
     ]
@@ -125,11 +101,18 @@ def find_targets(df):
     else:
         support1 = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
         support2 = support1 * 0.97
+
+    # القمة والقاع للفترة لضمان ترتيب صحيح
     period_high = df["high"].rolling(FIB_PERIOD).max().iloc[-1]
-    period_low = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
-    target1 = period_low + (period_high - period_low) * 0.382
-    target2 = period_low + (period_high - period_low) * 0.618
-    target3 = period_low + (period_high - period_low) * 1.0
+    period_low  = df["low"].rolling(FIB_PERIOD).min().iloc[-1]
+    if period_high < period_low:
+        period_high, period_low = period_low, period_high
+
+    # أهداف فيبوناتشي فوق السعر الحالي
+    target1 = max(latest_price, period_low + (period_high - period_low) * 0.382)
+    target2 = max(latest_price, period_low + (period_high - period_low) * 0.618)
+    target3 = max(latest_price, period_low + (period_high - period_low) * 1.0)
+
     return target1, target2, target3, support1, support2
 
 # ==============================
@@ -189,12 +172,18 @@ if st.button("🔍 Scan Market"):
             st.subheader(f"تحليل {selected}")
             st.line_chart(ohlc[["close", "ema50", "ema200"]])
             latest = ohlc.iloc[-1]
-            st.write("💰 سعر الدخول الحالي:", round(latest["close"], 4))
-            st.write("🟢 شراء إضافي 1:", round(results_df[results_df["symbol"]==selected]["support1"].values[0],4))
-            st.write("🟢 شراء إضافي 2:", round(results_df[results_df["symbol"]==selected]["support2"].values[0],4))
-            st.write("🎯 الهدف الأول:", round(results_df[results_df["symbol"]==selected]["target1"].values[0],4))
-            st.write("🎯 الهدف الثاني:", round(results_df[results_df["symbol"]==selected]["target2"].values[0],4))
-            st.write("🎯 الهدف الثالث:", round(results_df[results_df["symbol"]==selected]["target3"].values[0],4))
-            st.write("RSI:", round(latest["rsi"], 2))
-            st.write("MACD:", round(latest["macd"], 4))
-            st.write("Signal:", round(latest["signal"], 4))
+
+            # وصف المؤشرات
+            rsi_desc = "تشبع بيع" if latest["rsi"] < 30 else "حيادي" if latest["rsi"] < 70 else "تشبع شراء"
+            macd_desc = "اتجاه صاعد" if latest["macd"] > latest["signal"] else "اتجاه هابط"
+            signal_desc = "خط الإشارة أقل من MACD → إشارة شراء" if latest["macd"] > latest["signal"] else "خط الإشارة أعلى من MACD → إشارة بيع"
+
+            st.write(f"💰 سعر الدخول الحالي: {round(latest['close'],4)}")
+            st.write(f"🟢 شراء إضافي 1: {round(results_df[results_df['symbol']==selected]['support1'].values[0],4)}")
+            st.write(f"🟢 شراء إضافي 2: {round(results_df[results_df['symbol']==selected]['support2'].values[0],4)}")
+            st.write(f"🎯 الهدف الأول: {round(results_df[results_df['symbol']==selected]['target1'].values[0],4)}")
+            st.write(f"🎯 الهدف الثاني: {round(results_df[results_df['symbol']==selected]['target2'].values[0],4)}")
+            st.write(f"🎯 الهدف الثالث: {round(results_df[results_df['symbol']==selected]['target3'].values[0],4)}")
+            st.write(f"RSI: {round(latest['rsi'],2)} → {rsi_desc}")
+            st.write(f"MACD: {round(latest['macd'],4)} → {macd_desc}")
+            st.write(f"Signal: {round(latest['signal'],4)} → {signal_desc}")
